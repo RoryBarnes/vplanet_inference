@@ -293,7 +293,33 @@ class VplanetModel(object):
         t0 = time.time()
 
         # Execute the model!
-        subprocess.call([f"{self.executable} {self.vplfile}"], cwd=outpath, shell=True)
+        # Use Popen with proper process cleanup for multiprocessing compatibility
+        try:
+            process = subprocess.Popen(
+                [self.executable, self.vplfile],
+                cwd=outpath,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False
+            )
+            # Wait for process to complete with timeout (10 minutes max)
+            stdout, stderr = process.communicate(timeout=600)
+
+            # Check for non-zero exit code
+            if process.returncode != 0:
+                if self.verbose:
+                    print(f"VPlanet exited with code {process.returncode}")
+                    if stderr:
+                        print(f"stderr: {stderr.decode()}")
+        except subprocess.TimeoutExpired:
+            # Kill hung process
+            process.kill()
+            process.wait()
+            if self.verbose:
+                print(f"VPlanet process timed out after 600s in {outpath}")
+        except Exception as e:
+            if self.verbose:
+                print(f"Error executing VPlanet: {e}")
 
         try:
             output = vplanet.get_output(outpath)
@@ -325,7 +351,17 @@ class VplanetModel(object):
             print("")
 
         if remove == True:
-            shutil.rmtree(outpath)
+            try:
+                shutil.rmtree(outpath)
+            except Exception as e:
+                # Directory removal can fail if processes still hold file handles
+                # Try again after a brief delay
+                time.sleep(0.1)
+                try:
+                    shutil.rmtree(outpath)
+                except Exception as e2:
+                    if self.verbose:
+                        print(f"Warning: Could not remove {outpath}: {e2}")
 
         if self.timesteps is None:
             return model_final
