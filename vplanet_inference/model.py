@@ -104,7 +104,10 @@ class VplanetModel(object):
         outpath : (str) path to where model infiles should be written
         """
         
-        # Convert units of theta to SI
+        # Convert parameter values to VPLanet-compatible units.
+        # Dex parameters are un-logged to their physical values.
+        # All other parameters are passed through unchanged, so the
+        # config units must match VPLanet's expected input units.
         theta_conv = np.zeros(self.ninparam)
         theta_new_unit = []
 
@@ -113,14 +116,13 @@ class VplanetModel(object):
                 theta_conv[ii] = theta[ii]
                 theta_new_unit.append(None)
             elif isinstance(self.in_units[ii], u.function.logarithmic.DexUnit):
-                # un-log units
-                new_theta = (theta[ii] * self.in_units[ii]).physical.si
+                # un-log dex parameters to physical values
+                new_theta = (theta[ii] * self.in_units[ii]).physical
                 theta_conv[ii] = new_theta.value
                 theta_new_unit.append(new_theta.unit)
             else:
-                new_theta = (theta[ii] * self.in_units[ii]).si
-                theta_conv[ii] = new_theta.value
-                theta_new_unit.append(new_theta.unit)
+                theta_conv[ii] = theta[ii]
+                theta_new_unit.append(self.in_units[ii])
 
         if self.verbose:
             print("\nInput:")
@@ -167,7 +169,9 @@ class VplanetModel(object):
             # get saOutputOrder for evolution
             if file.strip('.in') in out_name_split[0]:
                 output_order_vars = out_name_split[1][np.where(out_name_split[0] == file.strip('.in'))[0]]
-                output_order_str = "Time " + " ".join(output_order_vars)
+                output_order_str = "Time " + " ".join(
+                    ["-" + v for v in output_order_vars]
+                )
 
                 # Set variables for tracking evolution
                 file_in = re.sub("%s*" % "saOutputOrder", "%s %s #" % ("saOutputOrder", output_order_str), file_in)
@@ -183,13 +187,6 @@ class VplanetModel(object):
             # if VPL file
             if file == 'vpl.in':
                 file_in = re.sub("%s(.*?)#" % "sSystemName", "%s %s #" % ("sSystemName", self.sys_name), file_in)
-
-                # Set units to SI
-                file_in = re.sub("%s(.*?)#" % "sUnitMass", "%s %s #" % ("sUnitMass", "kg"), file_in)
-                file_in = re.sub("%s(.*?)#" % "sUnitLength", "%s %s #" % ("sUnitLength", "m"), file_in)
-                file_in = re.sub("%s(.*?)#" % "sUnitTime", "%s %s #" % ("sUnitTime", "sec"), file_in)
-                file_in = re.sub("%s(.*?)#" % "sUnitAngle", "%s %s #" % ("sUnitAngle", "rad"), file_in)
-                file_in = re.sub("%s(.*?)#" % "sUnitTemp", "%s %s #" % ("sUnitTemp", "K"), file_in)
 
                 # Set output timesteps (if specified, otherwise will default to same as dStopTime)
                 if self.timesteps is not None:
