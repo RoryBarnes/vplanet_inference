@@ -90,11 +90,29 @@ class VplanetModel(object):
         # Run model foward (true) or backwards (false)?
         self.forward = forward
 
-        # Set initial simulation time (dAge)
+        # Set initial simulation time (dAge) in years
         try:
-            self.time_init = time_init.si.value
+            self.time_init = time_init.to(u.yr).value
         except:
             raise ValueError("Units for time_init not valid.")
+
+
+    @staticmethod
+    def _fnConvertTimeToYears(converted, in_unit):
+        """Convert time quantities to years for VPLanet templates.
+
+        Negative Quantity units (e.g. -u.Gyr) are sign conventions
+        in VPLanet and are left unconverted.
+        """
+        bIsSignConvention = isinstance(in_unit, u.Quantity) and in_unit.value < 0
+        if bIsSignConvention:
+            return converted
+        try:
+            if converted.unit.is_equivalent(u.yr):
+                converted = converted.to(u.yr)
+        except (u.UnitConversionError, AttributeError):
+            pass
+        return converted
 
 
     def initialize_model(self, theta, outpath=None):
@@ -106,8 +124,9 @@ class VplanetModel(object):
         
         # Convert parameter values to VPLanet-compatible units.
         # Dex parameters are un-logged to their physical values.
-        # All other parameters are passed through unchanged, so the
-        # config units must match VPLanet's expected input units.
+        # Other units are multiplied through (handles sign conventions
+        # like -u.dimensionless_unscaled). Positive time units are
+        # converted to years to match the template's sUnitTime.
         theta_conv = np.zeros(self.ninparam)
         theta_new_unit = []
 
@@ -116,13 +135,14 @@ class VplanetModel(object):
                 theta_conv[ii] = theta[ii]
                 theta_new_unit.append(None)
             elif isinstance(self.in_units[ii], u.function.logarithmic.DexUnit):
-                # un-log dex parameters to physical values
                 new_theta = (theta[ii] * self.in_units[ii]).physical
                 theta_conv[ii] = new_theta.value
                 theta_new_unit.append(new_theta.unit)
             else:
-                theta_conv[ii] = theta[ii]
-                theta_new_unit.append(self.in_units[ii])
+                converted = theta[ii] * self.in_units[ii]
+                converted = self._fnConvertTimeToYears(converted, self.in_units[ii])
+                theta_conv[ii] = converted.value
+                theta_new_unit.append(converted.unit)
 
         if self.verbose:
             print("\nInput:")
@@ -294,9 +314,10 @@ class VplanetModel(object):
 
         try:
             output = vplanet.get_output(outpath)
-        except:
-            print("If no logfile is found, it's probably because there was something wrong with the infile formatting.")
-            print(f"Try executing 'vplanet vpl.in' in directory {outpath} to diagnose the error in vplanet.")
+        except Exception:
+            if remove and os.path.isdir(outpath):
+                shutil.rmtree(outpath)
+            return np.full(len(self.outparams), np.nan)
 
         if return_output == True:
             return output
