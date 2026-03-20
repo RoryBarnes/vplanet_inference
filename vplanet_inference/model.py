@@ -11,6 +11,58 @@ from collections import OrderedDict
 
 __all__ = ["VplanetModel"]
 
+# VPLanet unit string -> astropy unit (per sUnit* key, case-insensitive)
+_VPLANET_UNITS = {
+    'sUnitMass': {
+        'gram': u.g, 'g': u.g, 'kg': u.kg,
+        'earth': u.M_earth, 'jupiter': u.M_jup,
+        'solar': u.M_sun, 'sun': u.M_sun,
+    },
+    'sUnitLength': {
+        'cm': u.cm, 'm': u.m, 'km': u.km,
+        'earth': u.R_earth, 'jupiter': u.R_jup,
+        'solar': u.R_sun, 'sun': u.R_sun, 'au': u.AU,
+    },
+    'sUnitTime': {
+        'sec': u.s, 'second': u.s, 'seconds': u.s, 's': u.s,
+        'day': u.d, 'days': u.d, 'd': u.d,
+        'year': u.yr, 'years': u.yr, 'yr': u.yr,
+        'myr': 1e6 * u.yr, 'gyr': 1e9 * u.yr,
+    },
+    'sUnitAngle': {
+        'deg': u.deg, 'degrees': u.deg, 'd': u.deg, 'degree': u.deg,
+        'rad': u.rad, 'radians': u.rad, 'radian': u.rad,
+    },
+    'sUnitTemp': {
+        'k': u.K, 'kelvin': u.K,
+    },
+}
+
+_SI_UNITS = {
+    'sUnitMass': u.kg, 'sUnitLength': u.m, 'sUnitTime': u.s,
+    'sUnitAngle': u.rad, 'sUnitTemp': u.K,
+}
+
+# Known VPLanet parameters -> which sUnit* key governs them
+_PARAM_UNIT_KEYS = {
+    'dObliquity': 'sUnitAngle', 'dPrecA': 'sUnitAngle',
+    'dLongP': 'sUnitAngle', 'dLongA': 'sUnitAngle',
+    'dInc': 'sUnitAngle', 'dArgP': 'sUnitAngle',
+    'dMass': 'sUnitMass',
+    'dSemi': 'sUnitLength', 'dRadius': 'sUnitLength',
+    'dAge': 'sUnitTime', 'dTimeStep': 'sUnitTime',
+}
+
+
+def _get_unit_key(param_name):
+    """Return the sUnit* key for a VPLanet parameter, or None."""
+    if param_name in _PARAM_UNIT_KEYS:
+        return _PARAM_UNIT_KEYS[param_name]
+    lower = param_name.lower()
+    if lower.endswith('time') or lower.endswith('period'):
+        return 'sUnitTime'
+    return None
+
 
 class VplanetModel(object):
 
@@ -73,6 +125,10 @@ class VplanetModel(object):
                             if ".in" in ll:
                                 self.infile_list.append(ll)
         
+        # Parse template unit settings from vpl.in
+        self._template_units = self._parse_template_units()
+        self._conversion_factors = self._compute_conversion_factors()
+
         # Fixed parameter substitutions - to be implemented!
         if fixsub is not None:
             self.fixparam = list(fixsub.keys())
@@ -90,28 +146,89 @@ class VplanetModel(object):
         # Run model foward (true) or backwards (false)?
         self.forward = forward
 
-        # Set initial simulation time (dAge) in years
+        # Set initial simulation time (dAge) in SI seconds
         try:
-            self.time_init = time_init.to(u.yr).value
+            self.time_init = time_init.si.value
         except:
             raise ValueError("Units for time_init not valid.")
 
 
-    @staticmethod
-    def _fnConvertToVplanetUnits(converted, in_unit):
-        """Convert a Quantity to the units forced by the VPLanet template.
+    def _parse_template_units(self):
+        """Read vpl.in and extract the original unit settings."""
+        template_units = {}
+        vpl_path = os.path.join(self.inpath, self.vplfile)
+        with open(vpl_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 2:
+                    continue
+                key = parts[0]
+                if key not in _VPLANET_UNITS:
+                    continue
+                unit_str = parts[1].lower()
+                unit_map = _VPLANET_UNITS[key]
+                if unit_str in unit_map:
+                    template_units[key] = unit_map[unit_str]
+                else:
+                    print(f"  Warning: unrecognized {key} value "
+                          f"'{parts[1]}', assuming SI")
+        return template_units
 
-        The template forces SI (kg, m, rad, K) for all unit families
-        except time, which uses years.  Negative Quantity units (e.g.
-        -u.Gyr) are VPLanet sign conventions and are left unconverted.
-        """
-        bIsSignConvention = (isinstance(in_unit, u.Quantity)
-                             and in_unit.value < 0)
-        if bIsSignConvention:
+    def _compute_conversion_factors(self):
+        """Compute multiplicative factors from template units to SI."""
+        factors = {}
+        for key, tmpl_unit in self._template_units.items():
+            si_unit = _SI_UNITS[key]
+            try:
+                factors[key] = (1.0 * tmpl_unit).to(si_unit).value
+            except u.UnitConversionError:
+                factors[key] = 1.0
+        return factors
+
+    def _convert_file_units(self, file_content, optimized_params):
+        """Convert non-optimized parameter values from template to SI."""
+        lines = file_content.split('\n')
+        converted = []
+        for line in lines:
+            converted.append(
+                self._convert_param_line(line, optimized_params)
+            )
+        return '\n'.join(converted)
+
+    def _convert_param_line(self, line, optimized_params):
+        """Convert a single parameter line from template to SI units."""
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            return line
+        parts = stripped.split()
+        if len(parts) < 2 or not parts[0].startswith('d'):
+            return line
+        param_name = parts[0]
+        if param_name in optimized_params:
+            return line
+        try:
+            value = float(parts[1])
+        except ValueError:
+            return line
+        if value <= 0:
+            return line
+        unit_key = _get_unit_key(param_name)
+        if unit_key is None:
+            return line
+        factor = self._conversion_factors.get(unit_key, 1.0)
+        if factor == 1.0:
+            return line
+        new_value = value * factor
+        idx = line.find(parts[1])
+        return line[:idx] + f"{new_value:.10e}" + line[idx + len(parts[1]):]
+
+    @staticmethod
+    def _convert_to_si(converted, in_unit):
+        """Convert a Quantity to SI.  Negative units are VPLanet sign
+        conventions and are left unconverted."""
+        if isinstance(in_unit, u.Quantity) and in_unit.value < 0:
             return converted
         try:
-            if converted.unit.is_equivalent(u.yr):
-                return converted.to(u.yr)
             return converted.si
         except (u.UnitConversionError, AttributeError):
             return converted
@@ -124,10 +241,9 @@ class VplanetModel(object):
         outpath : (str) path to where model infiles should be written
         """
 
-        # Convert parameter values to VPLanet-compatible units.
+        # Convert parameter values to SI for the forced-SI template.
         # Dex parameters are un-logged to their physical values.
-        # Other units are converted to SI (kg, m, rad, K) to match
-        # the forced template settings, except time which uses years.
+        # All other units are converted to SI (kg, m, s, rad, K).
         theta_conv = np.zeros(self.ninparam)
         theta_new_unit = []
 
@@ -141,7 +257,7 @@ class VplanetModel(object):
                 theta_new_unit.append(new_theta.unit)
             else:
                 converted = theta[ii] * self.in_units[ii]
-                converted = self._fnConvertToVplanetUnits(
+                converted = self._convert_to_si(
                     converted, self.in_units[ii]
                 )
                 theta_conv[ii] = converted.value
@@ -181,10 +297,15 @@ class VplanetModel(object):
         self.out_body_name_dict = out_body_name_dict  # e.g. {'secondary': ['RotPer', 'OrbPeriod'], 'primary': ['RotPer']}
         self.out_body_unit_dict = out_body_unit_dict  # e.g. {'secondary': [Unit("d"), Unit("d")], 'primary': [Unit("d")]}
 
+        optimized_param_names = set(param_name_all)
+
         for file in self.infile_list: # vpl.in, primary.in, secondary.in
             with open(os.path.join(self.inpath, file), 'r') as f:
                 file_in = f.read()
-                
+
+            # Convert non-optimized parameters from template units to SI
+            file_in = self._convert_file_units(file_in, optimized_param_names)
+
             ind = np.where(param_file_all == file.strip('.in'))[0]
             theta_file = theta_conv[ind]
             param_name_file = param_name_all[ind]
