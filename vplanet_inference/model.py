@@ -98,21 +98,23 @@ class VplanetModel(object):
 
 
     @staticmethod
-    def _fnConvertTimeToYears(converted, in_unit):
-        """Convert time quantities to years for VPLanet templates.
+    def _fnConvertToVplanetUnits(converted, in_unit):
+        """Convert a Quantity to the units forced by the VPLanet template.
 
-        Negative Quantity units (e.g. -u.Gyr) are sign conventions
-        in VPLanet and are left unconverted.
+        The template forces SI (kg, m, rad, K) for all unit families
+        except time, which uses years.  Negative Quantity units (e.g.
+        -u.Gyr) are VPLanet sign conventions and are left unconverted.
         """
-        bIsSignConvention = isinstance(in_unit, u.Quantity) and in_unit.value < 0
+        bIsSignConvention = (isinstance(in_unit, u.Quantity)
+                             and in_unit.value < 0)
         if bIsSignConvention:
             return converted
         try:
             if converted.unit.is_equivalent(u.yr):
-                converted = converted.to(u.yr)
+                return converted.to(u.yr)
+            return converted.si
         except (u.UnitConversionError, AttributeError):
-            pass
-        return converted
+            return converted
 
 
     def initialize_model(self, theta, outpath=None):
@@ -121,12 +123,11 @@ class VplanetModel(object):
 
         outpath : (str) path to where model infiles should be written
         """
-        
+
         # Convert parameter values to VPLanet-compatible units.
         # Dex parameters are un-logged to their physical values.
-        # Other units are multiplied through (handles sign conventions
-        # like -u.dimensionless_unscaled). Positive time units are
-        # converted to years to match the template's sUnitTime.
+        # Other units are converted to SI (kg, m, rad, K) to match
+        # the forced template settings, except time which uses years.
         theta_conv = np.zeros(self.ninparam)
         theta_new_unit = []
 
@@ -140,7 +141,9 @@ class VplanetModel(object):
                 theta_new_unit.append(new_theta.unit)
             else:
                 converted = theta[ii] * self.in_units[ii]
-                converted = self._fnConvertTimeToYears(converted, self.in_units[ii])
+                converted = self._fnConvertToVplanetUnits(
+                    converted, self.in_units[ii]
+                )
                 theta_conv[ii] = converted.value
                 theta_new_unit.append(converted.unit)
 
