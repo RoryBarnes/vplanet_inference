@@ -194,7 +194,7 @@ class VplanetModel(object):
                 )
 
                 # Set variables for tracking evolution
-                file_in = re.sub("%s*" % "saOutputOrder", "%s %s #" % ("saOutputOrder", output_order_str), file_in)
+                file_in = re.sub("%s(.*?)#" % "saOutputOrder", "%s %s #" % ("saOutputOrder", output_order_str), file_in)
                 
             # iterate over all input parameters, and substitute parameters in appropriate files
             for i in range(len(theta_file)):
